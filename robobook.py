@@ -1,14 +1,20 @@
 #!/usr/bin/env python
 
-import sys,os
+import sys,os,random
 import curses
 import urllib2, urllib, commands, json
 import shlex, subprocess
+import threading
+
+from rgbmatrix import RGBMatrix, RGBMatrixOptions
+from time import sleep
+
 
 LED_IMAGE_VIEWER_PATH = "/home/pi/led-image-viewer"
 
 brightness = 75
 process = None
+binstr = ""
 
 def led_gif():
     global LED_IMAGE_VIEWER_PATH
@@ -23,7 +29,53 @@ def led_gif():
         + " --led-rows=64 --led-cols=64 --led-brightness=" + str(brightness)
         + " gifs/1.gif & > /dev/null"))
 
+class LEDBin(threading.Thread):
+    def run(self):
+        global process
+#        global binstr
+
+        if (process != None):
+            process.kill()
+            process = None
+
+        options = RGBMatrixOptions()
+        options.rows = 64
+        options.cols = 64
+        options.brightness = brightness
+
+        matrix = RGBMatrix(options = options)
+       
+        ct = 0
+
+        while True:
+            if ct == 10:
+                sleep(0.05)
+                ct  = 0
+            offset_canvas = matrix.CreateFrameCanvas()
+            i = 0
+            for c in binstr:
+                if (c == '0'):
+                    offset_canvas.SetPixel(i % 64, 2 * i / 64, 0, 0, 0)
+                    offset_canvas.SetPixel(i % 64 + 1, 2 * i / 64, 0, 0, 0)
+                    offset_canvas.SetPixel(i % 64 + 1, 2 * i / 64 + 1, 0, 0, 0)
+                    offset_canvas.SetPixel(i % 64, 2 * i / 64 + 1, 0, 0, 0)
+                if (c == '1'):
+                    r = random.randint(0,255)
+                    g = random.randint(0,255)
+                    b = random.randint(0,255)
+                    offset_canvas.SetPixel(i % 64, 2 * i / 64, r, g, b)
+                    offset_canvas.SetPixel(i % 64 + 1, 2 * i / 64, r, g, b)
+                    offset_canvas.SetPixel(i % 64 + 1, 2 * i / 64 + 1, r, g, b)
+                    offset_canvas.SetPixel(i % 64, 2 * i / 64 + 1, r, g, b)
+
+                i += 2
+            offset_canvas = matrix.SwapOnVSync(offset_canvas)
+            ct += 1
+    
+    
 def draw_menu(stdscr):
+    global binstr
+
     k = 0
 
     # Clear and refresh the screen for a blank canvas
@@ -36,6 +88,8 @@ def draw_menu(stdscr):
     curses.init_pair(2, curses.COLOR_RED, curses.COLOR_BLACK)
     curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
+    LEDBin().start()
+
     # Loop where k is the last character pressed
     while (k != ord('q')):
 
@@ -45,14 +99,16 @@ def draw_menu(stdscr):
 
         title = "ROBOBOOK 0.1"[:width-1]
 
-        if k == ord('1'):
+        if k == ord('a'):
             led_gif()
-        elif k == 259:
+        elif k == 259 or k == ord('0'):
             # Pushed 0
             title = "0"
-        elif k == 350:
+            binstr += "0"
+        elif k == 350 or k == ord('1'):
             # Pushed 1
             title = "1"
+            binstr += "1"
         elif k == 258:
             # Pushed done
             title = "done"
