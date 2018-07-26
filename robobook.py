@@ -14,7 +14,9 @@ LED_IMAGE_VIEWER_PATH = "/home/pi/led-image-viewer"
 
 brightness = 75
 process = None
+lbt = None
 binstr = ""
+mode = "off"
 
 def led_gif():
     global LED_IMAGE_VIEWER_PATH
@@ -29,52 +31,107 @@ def led_gif():
         + " --led-rows=64 --led-cols=64 --led-brightness=" + str(brightness)
         + " gifs/1.gif & > /dev/null"))
 
-class LEDBin(threading.Thread):
-    def run(self):
-        global process
-#        global binstr
+def switchMode(nmode):
+    global mode
+    global process
+    global lbt
 
+    if nmode == mode:
+        return
+
+    if mode == "binstr":
+        lbt.matrix.Clear()
+
+    if nmode == "binstr":
         if (process != None):
             process.kill()
             process = None
+    elif nmode == "off":
+        if (process != None):
+            process.kill()
+            process = None
+    elif nmode == "gif":
+        led_gif()
 
+    mode = nmode
+
+class LEDBin(threading.Thread):
+    matrix = None
+    particles = []
+    lbinstr = ""
+
+    def run(self):
         options = RGBMatrixOptions()
         options.rows = 64
         options.cols = 64
         options.brightness = brightness
 
-        matrix = RGBMatrix(options = options)
-       
+        self.matrix = RGBMatrix(options = options)
+
+        global process
+
         ct = 0
 
         while True:
-            if ct == 10:
-                sleep(0.05)
-                ct  = 0
-            offset_canvas = matrix.CreateFrameCanvas()
-            i = 0
-            for c in binstr:
-                if (c == '0'):
-                    offset_canvas.SetPixel(i % 64, 2 * i / 64, 0, 0, 0)
-                    offset_canvas.SetPixel(i % 64 + 1, 2 * i / 64, 0, 0, 0)
-                    offset_canvas.SetPixel(i % 64 + 1, 2 * i / 64 + 1, 0, 0, 0)
-                    offset_canvas.SetPixel(i % 64, 2 * i / 64 + 1, 0, 0, 0)
-                if (c == '1'):
+            if mode != "binstr":
+                sleep(1)
+
+            else:
+                if (len(binstr) < len(self.lbinstr)):
+                    self.particles = []
+                    self.lbinstr = ""
+
+                while (len(self.lbinstr) < len(binstr)):
+                    self.particles.append({'x': random.randint(0,63), 'y': random.randint(53,63) if binstr[len(self.lbinstr)] == '0' else random.randint(0,10),
+                        'dir': 0 if binstr[len(self.lbinstr)] == '0' else 1, 'life': 100000})
+                    self.lbinstr += binstr[len(self.lbinstr)]
+
+                    while (len(self.particles) > 300):
+                        self.particles.pop(0)
+
+                sleep(0.01)
+                offset_canvas = self.matrix.CreateFrameCanvas()
+                matrix = [[0 for x in range(64)] for y in range(64)]
+
+                nparticles = []
+                for p in self.particles:
                     r = random.randint(0,255)
                     g = random.randint(0,255)
                     b = random.randint(0,255)
-                    offset_canvas.SetPixel(i % 64, 2 * i / 64, r, g, b)
-                    offset_canvas.SetPixel(i % 64 + 1, 2 * i / 64, r, g, b)
-                    offset_canvas.SetPixel(i % 64 + 1, 2 * i / 64 + 1, r, g, b)
-                    offset_canvas.SetPixel(i % 64, 2 * i / 64 + 1, r, g, b)
+                    offset_canvas.SetPixel(p['x'], p['y'], r, g, b)
+                    matrix[p['x']][p['y']] = 1
 
-                i += 2
-            offset_canvas = matrix.SwapOnVSync(offset_canvas)
-            ct += 1
-    
-    
+                    if p['dir'] == 1 and p['y'] < 63 and matrix[p['x']][p['y'] + 1] == 0:
+                        p['y'] += 1
+                    elif p['dir'] == 0 and p['y'] > 0 and matrix[p['x']][p['y'] - 1] == 0:
+                        p['y'] -= 1
+
+                    if p['life'] > 0:
+                        nparticles.append(p)
+
+                    p['life'] -= 1
+                self.particles = nparticles
+
+                # i = 0
+                #for c in binstr:
+                #    if (c == '0'):
+                    #     for i2 in range(0,64):
+                    #         offset_canvas.SetPixel(i, i2, 0, 0, 0)
+                    # if (c == '1'):
+                    #     r = random.randint(0,255)
+                    #     g = random.randint(0,255)
+                    #     b = random.randint(0,255)
+                    #     for i2 in range(0,64):
+                    #         offset_canvas.SetPixel(i, i2, r, g, b)
+                    #
+                    # i += 2
+                if mode == "binstr":
+                    offset_canvas = self.matrix.SwapOnVSync(offset_canvas)
+
+
 def draw_menu(stdscr):
     global binstr
+    global lbt
 
     k = 0
 
@@ -88,7 +145,11 @@ def draw_menu(stdscr):
     curses.init_pair(2, curses.COLOR_RED, curses.COLOR_BLACK)
     curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_WHITE)
 
-    LEDBin().start()
+    lbt = LEDBin()
+    lbt.daemon = True
+    lbt.start()
+
+    lbt.matrix.Clear()
 
     # Loop where k is the last character pressed
     while (k != ord('q')):
@@ -102,14 +163,21 @@ def draw_menu(stdscr):
         if k == ord('a'):
             led_gif()
         elif k == 259 or k == ord('0'):
+            switchMode("binstr")
+
             # Pushed 0
             title = "0"
             binstr += "0"
         elif k == 350 or k == ord('1'):
+            switchMode("binstr")
+
             # Pushed 1
             title = "1"
             binstr += "1"
-        elif k == 258:
+        elif k == 258 or k == ord('2'):
+            switchMode("off")
+            binstr = ""
+
             # Pushed done
             title = "done"
         elif k != 0:
