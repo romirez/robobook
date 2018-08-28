@@ -4,8 +4,11 @@ import RPi.GPIO as GPIO
 import sys,os,random,math
 import curses
 import urllib2, urllib, commands, json
-import shlex, subprocess
+import shlex, subprocess, pexpect
 import threading
+from PIL import Image
+from colour import Color
+import logging
 
 from rgbmatrix import RGBMatrix, RGBMatrixOptions, graphics
 from time import sleep
@@ -13,30 +16,21 @@ from time import sleep
 
 LED_IMAGE_VIEWER_PATH = "/home/pi/led-image-viewer"
 
-brightness = 75
+brightness = 60
 process = None
 lbt = None
 binstr = ""
 mode = "off"
-
-def led_gif():
-    global LED_IMAGE_VIEWER_PATH
-    global process
-    global brightness
-
-    if (process != None):
-        process.kill()
-        process = None
-
-    process = subprocess.Popen(shlex.split(LED_IMAGE_VIEWER_PATH
-        + " --led-rows=64 --led-cols=64 --led-brightness=" + str(brightness)
-        + " gifs/1.gif & > /dev/null"))
 
 def switchMode(nmode):
     global mode
     global process
     global lbt
     global binstr
+    global LED_IMAGE_VIEWER_PATH
+    global brightness
+
+    logging.debug("Switching mode from " + mode + " to " + nmode)
 
     if nmode == mode:
         return
@@ -46,19 +40,24 @@ def switchMode(nmode):
     if mode == "binstr":
         binstr = ""
         lbt.matrix.Clear()
-    elif mode == "text":
-        lbt.matrix.Clear()
-    elif mode == "gif":
+        #del lbt.matrix
+        sleep(0.1)
+    elif mode == "gif" or mode == "greeting":
         if (process != None):
-            process.kill()
+            process.sendcontrol("c")
             process = None
+            sleep(0.1)
 
     #establish new mode
 
-    if nmode == "gif":
-        led_gif()
+    if nmode == "greeting":
+        process = pexpect.spawn(LED_IMAGE_VIEWER_PATH
+            + " --led-rows=64 --led-cols=64 --led-brightness=" + str(brightness)
+            + " /home/pi/robobook/bootup.gif greeting.gif")
     elif nmode == "binstr_fin":
-        
+        process = pexpect.spawn(LED_IMAGE_VIEWER_PATH
+            + " --led-rows=64 --led-cols=64 --led-brightness=" + str(brightness)
+            + " /home/pi/robobook/message.gif")
 
     mode = nmode
 
@@ -73,20 +72,9 @@ class LEDBin(threading.Thread):
         options.cols = 64
         options.brightness = brightness
 
-        font = graphics.Font()
-        font.LoadFont("univga.bdf")
-
-        self.matrix = RGBMatrix(options = options)
-
         global process
         global mode
         global binstr
-
-        ct = 0
-
-        textindex = 0
-        textdelay = 0
-        text = "ENTER0/1"
 
         partmode = 1
         refreshrate = 0.02
@@ -94,36 +82,29 @@ class LEDBin(threading.Thread):
 
         while True:
             swt = GPIO.input(25)
+            logging.debug("swt=" + str(swt) + " mode=" + mode)
 
             if (swt == 1 and mode == "off"):
                 #startup
-                switchMode("text")
+                switchMode("greeting")
+                sleep(1)
             elif (swt == 0 and mode != "off"):
                 #shutdown
                 switchMode("off")
                 sleep(1)
             elif (mode == "off"):
                 sleep(1)
-            elif mode == "gif":
+            elif mode == "greeting":
                 #gif already loaded by switchMode so just wait
+                logging.debug("processalive=" + str(process.isalive()))
+                if process.isalive() == False:
+                    switchMode("")
                 sleep(1)
-            elif mode == "text":
-                r = random.randint(0,255*brightness/100)
-                g = random.randint(0,255*brightness/100)
-                b = random.randint(0,255*brightness/100)
-                textColor = graphics.Color(r, g, b)
-                offset_canvas = self.matrix.CreateFrameCanvas()
-                graphics.DrawText(offset_canvas, font, 12, 72, textColor, text[textindex])
-                offset_canvas = self.matrix.SwapOnVSync(offset_canvas)
-                sleep(0.01)
-                textdelay += 1
-                if (textdelay > 30):
-                    textindex += 1
-                    textdelay = 0
-                if (textindex >= len(text)):
-                    textindex = 0
-                    switchMode("binstr")
-            elif mode == "binstr" and partmode == 0:
+            elif mode == "binstr":
+                if (self.matrix == None):
+                    self.matrix = RGBMatrix(options = options)
+                    logging.debug("new matrix")
+
                 if (len(binstr) < len(self.lbinstr)):
                     self.particles = []
                     self.lbinstr = ""
@@ -144,89 +125,74 @@ class LEDBin(threading.Thread):
                 matrix = [[0 for x in range(64)] for y in range(64)]
 
                 nparticles = []
+
                 for p in self.particles:
-                    r = random.randint(0,255*brightness/100)
-                    g = random.randint(0,255*brightness/100)
-                    b = random.randint(0,255*brightness/100)
-                    offset_canvas.SetPixel(p['x'], p['y'], r, g, b)
-                    matrix[p['x']][p['y']] = 1
+                    if (len(binstr) < 20):
+                        r = random.randint(0,255*brightness/100)
+                        g = random.randint(0,255*brightness/100)
+                        b = random.randint(0,255*brightness/100)
 
-                    if p['dir'] == 1 and p['y'] < 63 and matrix[p['x']][p['y'] + 1] == 0:
-                        p['y'] += 1
-                    elif p['dir'] == 0 and p['y'] > 0 and matrix[p['x']][p['y'] - 1] == 0:
-                        p['y'] -= 1
+                        circ = math.floor(math.pi * 2 * p['r'])
+                        angle = 2*math.pi*p['pos']
 
-                    if p['life'] > 0:
-                        nparticles.append(p)
+                        p['x'] = int(math.floor(32 + math.cos(angle)*p['r']))
+                        p['y'] = int(math.floor(32 + math.sin(angle)*p['r']))
 
-                    p['life'] -= 1
+                        offset_canvas.SetPixel(p['x'], p['y'], r, g, b)
+
+                        if p['dir'] == 1:
+                            p['pos'] += p['speed']
+                            if (p['pos']) > 1: p['pos'] -= 1
+                        elif p['dir'] == 0:
+                            p['pos'] -= p['speed']
+                            if (p['pos']) < 0: p['pos'] += 1
+
+                        if p['life'] > 0:
+                            nparticles.append(p)
+
+                        p['life'] -= 1
+                    elif (len(binstr) < 40):
+                        r = random.randint(0,255*brightness/100)
+                        g = random.randint(0,255*brightness/100)
+                        b = random.randint(0,255*brightness/100)
+                        offset_canvas.SetPixel(p['x'], p['y'], r, g, b)
+                        matrix[p['x']][p['y']] = 1
+
+                        if p['dir'] == 1 and p['y'] < 63 and matrix[p['x']][p['y'] + 1] == 0:
+                            p['y'] += 1
+                        elif p['dir'] == 0 and p['y'] > 0 and matrix[p['x']][p['y'] - 1] == 0:
+                            p['y'] -= 1
+                        elif p['dir'] == 1 and (p['y'] == 63 or matrix[p['x']][p['y'] + 1] != 0):
+                            p['dir'] = 0
+                        elif p['dir'] == 0 and (p['y'] == 0 or matrix[p['x']][p['y'] - 1] != 0):
+                            p['dir'] = 1
+
+                        if p['life'] > 0:
+                            nparticles.append(p)
+
+                        p['life'] -= 11
+                    else:
+                        r = random.randint(0,255*brightness/100)
+                        g = random.randint(0,255*brightness/100)
+                        b = random.randint(0,255*brightness/100)
+                        offset_canvas.SetPixel(p['x'], p['y'], r, g, b)
+                        matrix[p['x']][p['y']] = 1
+
+                        if p['dir'] == 1 and p['y'] < 63 and matrix[p['x']][p['y'] + 1] == 0:
+                            p['y'] += 1
+                        elif p['dir'] == 0 and p['y'] > 0 and matrix[p['x']][p['y'] - 1] == 0:
+                            p['y'] -= 1
+
+                        if p['life'] > 0:
+                            nparticles.append(p)
+
+                        p['life'] -= 1
 
                 self.particles = nparticles
 
                 offset_canvas = self.matrix.SwapOnVSync(offset_canvas)
 
-                cycletime += 1
-                if (cycletime > 50):
-                    partmode = 1
-                    cycletime = 0
 
-            elif mode == "binstr" and partmode == 1:
-                if (len(binstr) < len(self.lbinstr)):
-                    self.particles = []
-                    self.lbinstr = ""
-
-                # add new particles
-                while (len(self.lbinstr) < len(binstr)):
-                    r = random.randint(10,30)
-                    pos = random.random()
-                    p = {'r': r, 'pos': pos,
-                        'dir': 0 if binstr[len(self.lbinstr)] == '0' else 1, 'life': 100000, 'speed': random.uniform(0.01, 0.02)}
-                    angle = 2*math.pi*p['pos']
-                    p['x'] = int(math.floor(32 + math.cos(angle)*p['r']))
-                    p['y'] = int(math.floor(32 + math.sin(angle)*p['r']))
-                    self.particles.append(p)
-                    self.lbinstr += binstr[len(self.lbinstr)]
-
-                    while (len(self.particles) > 300):
-                        self.particles.pop(0)
-
-                sleep(refreshrate)
-                offset_canvas = self.matrix.CreateFrameCanvas()
-                matrix = [[0 for x in range(64)] for y in range(64)]
-
-                nparticles = []
-                for p in self.particles:
-                    r = random.randint(0,255*brightness/100)
-                    g = random.randint(0,255*brightness/100)
-                    b = random.randint(0,255*brightness/100)
-
-                    circ = math.floor(math.pi * 2 * p['r'])
-                    angle = 2*math.pi*p['pos']
-
-                    p['x'] = int(math.floor(32 + math.cos(angle)*p['r']))
-                    p['y'] = int(math.floor(32 + math.sin(angle)*p['r']))
-
-                    offset_canvas.SetPixel(p['x'], p['y'], r, g, b)
-
-                    if p['dir'] == 1:
-                        p['pos'] += p['speed']
-                        if (p['pos']) > 1: p['pos'] -= 1
-                    elif p['dir'] == 0:
-                        p['pos'] -= p['speed']
-                        if (p['pos']) < 0: p['pos'] += 1
-
-                    if p['life'] > 0:
-                        nparticles.append(p)
-
-                    p['life'] -= 1
-
-                self.particles = nparticles
-
-                offset_canvas = self.matrix.SwapOnVSync(offset_canvas)
-                cycletime += 1
-                if (cycletime > 50):
-                    partmode = 0
-                    cycletime = 0
 
 def draw_menu(stdscr):
     global binstr
@@ -248,9 +214,6 @@ def draw_menu(stdscr):
     lbt.daemon = True
     lbt.start()
 
-    lbt.matrix.Clear()
-
-
     # Loop where k is the last character pressed
     while (k != ord('q')):
 
@@ -258,15 +221,12 @@ def draw_menu(stdscr):
         stdscr.clear()
         height, width = stdscr.getmaxyx()
 
-        title = "ROBOBOOK 0.1"
-        title += ("\nmode: " + mode)
-
         if k == ord('a'):
-            led_gif()
+            switchMode("gif")
         elif k == 259 or k == ord('0'):
             switchMode("binstr")
 
-            title += ("\nbinstr: " + binstr)
+            #title += ("\nbinstr: " + binstr)
 
             # Pushed 0
             title += "\nentered: 0"
@@ -274,7 +234,7 @@ def draw_menu(stdscr):
         elif k == 350 or k == ord('1'):
             switchMode("binstr")
 
-            title += ("\nbinstr: " + binstr)
+            #title += ("\nbinstr: " + binstr)
 
             # Pushed 1
             title += "\nentered: 1"
@@ -283,8 +243,13 @@ def draw_menu(stdscr):
             switchMode("binstr_fin")
         elif k == ord('3'):
             switchMode("text")
+        elif k == ord('4'):
+            switchMode("robot")
         elif k != 0:
             title += "pushed: " + str(k)
+
+        title = "ROBOBOOK 0.1"
+        title += ("\nmode: " + mode)
 
         # Centering calculations
         start_x_title = int((width // 2) - (len(title) // 2) - len(title) % 2)
@@ -307,6 +272,7 @@ def draw_menu(stdscr):
 
         # Wait for next input
         k = stdscr.getch()
+    GPIO.cleanup()
 
 def main():
     # init GPIO
@@ -314,6 +280,11 @@ def main():
     GPIO.setup(19, GPIO.OUT)
     GPIO.output(19,GPIO.HIGH)
     GPIO.setup(25, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
+
+    logging.basicConfig(filename='example.log',level=logging.DEBUG)
+    logging.debug('This message should go to the log file')
+    logging.info('So should this')
+    logging.warning('And this, too')
 
     curses.wrapper(draw_menu)
 
