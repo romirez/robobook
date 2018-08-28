@@ -10,5 +10,5 @@ echo $num2.gif done!
 read -p "test? " yn 
 echo    # (optional) move to a new line
 case yn in 
-	[Yy]* ) sudo /home/pi/led-image-viewer --led-rows=64 --led-cols=64 --led-brightness=50 gifs/$num2.gif; break;;
+	[Yy]* ) sudo /home/pi/led-image-viewer --led-rows=64 --led-cols=64 --led-brightness=50 --led-rgb-sequence=RBG gifs/$num2.gif; break;;
 esac

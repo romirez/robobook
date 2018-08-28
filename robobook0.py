@@ -20,55 +20,130 @@ process = None
 lbt = None
 mode = "off"
 
+matrix = None
+particles = []
+lbinstr = ""
 
-def draw_menu(stdscr):
+options = RGBMatrixOptions()
+options.rows = 64
+options.cols = 64
+options.brightness = brightness
 
-    k = 0
+global process
+global mode
+global binstr
 
-    # Clear and refresh the screen for a blank canvas
-    stdscr.clear()
-    stdscr.refresh()
+partmode = 1
+refreshrate = 0.02
+cycletime = 0
 
-    # Start colors in curses
-    curses.start_color()
-    curses.init_pair(1, curses.COLOR_CYAN, curses.COLOR_BLACK)
-    curses.init_pair(2, curses.COLOR_RED, curses.COLOR_BLACK)
-    curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_WHITE)
+import sys
+import select
+import tty
+import termios
 
+matrix = None
+particles = []
+lbinstr = ""
+binstr = ""
 
-    # Loop where k is the last character pressed
-    while (k != ord('q')):
+class LEDBin(threading.Thread):
+    def run(self):
+        global matrix
+        global particles
+        global lbinstr
+        global binstr
 
-        process = pexpect.spawn(LED_IMAGE_VIEWER_PATH
-            + " --led-rows=64 --led-cols=64 --led-brightness=" + str(brightness)
-            + " /home/pi/robobook/greeting.gif")
+        matrix = RGBMatrix(options = options)
+        while True:
+            # add new particles
+            while (len(lbinstr) < len(binstr)):
+                r = random.randint(10,30)
+                pos = random.random()
+                particles.append({'r': r, 'pos': pos,'x': random.randint(0,63), 'y': random.randint(53,63) if binstr[len(lbinstr)] == '0' else random.randint(0,10),
+                    'dir': 0 if binstr[len(lbinstr)] == '0' else 1, 'life': 100000, 'speed': random.uniform(0.01, 0.02)})
+                lbinstr += binstr[len(lbinstr)]
 
+                while (len(particles) > 300):
+                    particles.pop(0)
 
-        title = "ROBOBOOK 0.1"
-        title += ("\nmode: ")
+            sleep(refreshrate)
+            offset_canvas = matrix.CreateFrameCanvas()
+            nmatrix = [[0 for x in range(64)] for y in range(64)]
 
-        # Centering calculations
+            nparticles = []
 
-        # Turning on attributes for title
-        stdscr.attron(curses.color_pair(2))
-        stdscr.attron(curses.A_BOLD)
+            for p in particles:
+                if (len(binstr) < 20):
+                    r = random.randint(0,255*brightness/100)
+                    g = random.randint(0,255*brightness/100)
+                    b = random.randint(0,255*brightness/100)
 
-        # Rendering title
-        stdscr.addstr(0, 0, title)
+                    circ = math.floor(math.pi * 2 * p['r'])
+                    angle = 2*math.pi*p['pos']
 
-        # Turning off attributes for title
-        stdscr.attroff(curses.color_pair(2))
-        stdscr.attroff(curses.A_BOLD)
+                    p['x'] = int(math.floor(32 + math.cos(angle)*p['r']))
+                    p['y'] = int(math.floor(32 + math.sin(angle)*p['r']))
 
+                    offset_canvas.SetPixel(p['x'], p['y'], r, g, b)
 
-        # Refresh the screen
-        stdscr.refresh()
+                    if p['dir'] == 1:
+                        p['pos'] += p['speed']
+                        if (p['pos']) > 1: p['pos'] -= 1
+                    elif p['dir'] == 0:
+                        p['pos'] -= p['speed']
+                        if (p['pos']) < 0: p['pos'] += 1
 
-        # Wait for next input
-        k = stdscr.getch()
+                    if p['life'] > 0:
+                        nparticles.append(p)
 
-def main():
-    curses.wrapper(draw_menu)
+                    p['life'] -= 1
+                elif (len(binstr) < 40):
+                    r = random.randint(0,255*brightness/100)
+                    g = random.randint(0,255*brightness/100)
+                    b = random.randint(0,255*brightness/100)
+                    offset_canvas.SetPixel(p['x'], p['y'], r, g, b)
+                    nmatrix[p['x']][p['y']] = 1
 
-if __name__ == "__main__":
-    main()
+                    if p['dir'] == 1 and p['y'] < 63 and nmatrix[p['x']][p['y'] + 1] == 0:
+                        p['y'] += 1
+                    elif p['dir'] == 0 and p['y'] > 0 and nmatrix[p['x']][p['y'] - 1] == 0:
+                        p['y'] -= 1
+                    elif p['dir'] == 1 and (p['y'] == 63 or nmatrix[p['x']][p['y'] + 1] != 0):
+                        p['dir'] = 0
+                    elif p['dir'] == 0 and (p['y'] == 0 or nmatrix[p['x']][p['y'] - 1] != 0):
+                        p['dir'] = 1
+
+                    if p['life'] > 0:
+                        nparticles.append(p)
+
+                    p['life'] -= 11
+                else:
+                    r = random.randint(0,255*brightness/100)
+                    g = random.randint(0,255*brightness/100)
+                    b = random.randint(0,255*brightness/100)
+                    offset_canvas.SetPixel(p['x'], p['y'], r, g, b)
+                    nmatrix[p['x']][p['y']] = 1
+
+                    if p['dir'] == 1 and p['y'] < 63 and nmatrix[p['x']][p['y'] + 1] == 0:
+                        p['y'] += 1
+                    elif p['dir'] == 0 and p['y'] > 0 and nmatrix[p['x']][p['y'] - 1] == 0:
+                        p['y'] -= 1
+
+                    if p['life'] > 0:
+                        nparticles.append(p)
+
+                    p['life'] -= 1
+
+            particles = nparticles
+
+            offset_canvas = matrix.SwapOnVSync(offset_canvas)
+
+lbt = LEDBin()
+lbt.daemon = True
+lbt.start()
+
+while True:
+    line = sys.stdin.readline()
+    print 'adding' + line[0]
+    binstr += line[0]
